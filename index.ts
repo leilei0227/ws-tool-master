@@ -216,7 +216,8 @@ export class App extends Vue {
   // errorStatus = 402主站报文错误
   // errorStatus = 403从站报文错误
   // errorStatus = 501未连接
-  // errorStatus = 502已断开
+  // errorStatus = 502已连接
+  // errorStatus = 503已断开
   private errorStatus: number = 501//zll
   private isClosed: boolean = true//zll
   private errorObj: any = {

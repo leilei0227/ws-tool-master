@@ -1,0 +1,97 @@
+<!DOCTYPE html>
+<html>
+	<head>
+		<meta charset="utf-8">
+		<title>485错误记录</title>
+		<link rel="stylesheet" href="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/css/bootstrap.min.css" integrity="sha384-Vkoo8x4CGsO3+Hhxv8T/Q5PaXtkKtu6ug5TOeNV6gBiFeWPGFN9MuhOf23Q9Ifjh"
+		 crossorigin="anonymous">
+		<style type="text/css">
+			body {
+				font-size: 14px;
+			}
+		</style>
+	</head>
+	<body>
+		<div id="app" class="container-fluid">
+			<div class="row">
+				<div class="col-lg-12">
+					<h4 class="text-center mt-4 mb-4">错误记录</h4>
+					<div style="min-height: 506px;">
+						<table class="table table-striped text-center">
+							<tr>
+								<th>#</th>
+								<th>时间</th>
+								<th>主站报文</th>
+								<th>从站报文</th>
+								<th>错误信息</th>
+							</tr>
+							<tr v-for="(item, index) in errorMsgs" :key="index">
+								<td v-text="index+ 1"></td>
+								<td v-text="item.moment"></td>
+								<td v-text="item.mainPack"></td>
+								<td v-text="item.subPack"></td>
+								<td v-text="item.msgStatus"></td>
+							</tr>
+						</table>
+					</div>
+				</div>
+			</div>
+			<div class="row">
+				<div class="col-lg-11">
+					<nav>
+						<ul class="pagination justify-content-center">
+						</ul>
+					</nav>
+				</div>
+				<!-- <div class="col-lg-1 text-right" style="line-height: 34px;">共 <span v-text="total"></span> 条记录</div> -->
+			</div>
+		</div>
+
+		<script src="./vue.min.js"></script>
+		<script src="./jquery.min.js"></script>
+		<script src="./jq-paginator.min.js"></script>
+		<script type="text/javascript">
+			const vm = new Vue({
+				el: '#app',
+				data: {
+					errorMsgs: [],
+					currentPage: 1,
+					pageSize: 10,
+					total: 0
+				},
+				methods: {
+					getErrorMsg: function() {
+						var that = this
+						$.get(`http://106.12.153.196:12345/getErrorMsg?currentPage=${this.currentPage}&pageSize=${this.pageSize}`,
+							function(res) {
+								if (res.status == 200) {
+									that.errorMsgs = res.data
+									that.total = res.total
+
+									// $(".pagination").jqPaginator({
+									// 	totalPages: Math.ceil(res.total / res.pageSize),
+									// 	visiblePages: 5,
+									// 	currentPage: that.currentPage,
+									// 	first: '<li class="first page-item"><a class="page-link" href="javascript:void(0);">&laquo;<\/a><\/li>',
+									// 	prev: '<li class="prev page-item"><a class="page-link" href="javascript:void(0);">&lt;<\/a><\/li>',
+									// 	next: '<li class="next page-item"><a class="page-link" href="javascript:void(0);">&gt;<\/a><\/li>',
+									// 	last: '<li class="last page-item"><a class="page-link" href="javascript:void(0);">&raquo;<\/a><\/li>',
+									// 	page: '<li class="page page-item"><a class="page-link" href="javascript:void(0);">{{page}}<\/a><\/li>',
+									// 	onPageChange: function(index, type) {
+									// 		if (type === "change") {
+									// 			that.currentPage = index
+									// 			that.getErrorMsg()
+									// 		}
+									// 	}
+									// })
+								}
+							})
+					}
+				},
+				created: function() {
+					this.getErrorMsg()
+				}
+			})
+		</script>
+	</body>
+</html>

@@ -1,0 +1,94 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+    <meta charset="UTF-8">
+	<meta name="renderer" content="webkit|ie-comp|ie-stand">
+    <meta http-equiv="X-UA-Compatible" content="IE=edge,chrome=1" />
+    <title>查看分享</title>
+	<script>
+	var ua = navigator.userAgent;
+    var request = function() {
+        var url = window.location.search;
+        var request = new Object();
+        if (url.indexOf("?") != -1) {
+            var str = url.substr(1);
+            strs = str.split("&");
+            for (var i = 0; i < strs.length; i++) {
+                request[strs[i].split("=")[0]] = (strs[i].split("=")[1]);
+            }
+        }
+        return request;
+    }();
+    if(ua.indexOf('Mobile') > -1 && !(request.m == 'pc')) {
+        var search = window.location.search;
+        window.location.href = 'wap/share.html' + search;
+    }
+	</script>
+    <link rel="shortcut icon" href="statics/images/favicon.ico"/>
+    <link rel="stylesheet" type="text/css" href="statics/xui/styles/xui.css?v=1903131537">
+    <link rel="stylesheet" type="text/css" href="statics/styles/share.css?v=1903131537">
+	<link rel="stylesheet" type="text/css" href="statics/skins/skin.css?v=1903131537">
+    <link rel="stylesheet" type="text/css" href="statics/fancybox/styles/jquery.fancybox.css">
+    <!--[if lte IE 7]>
+    <link rel="stylesheet" type="text/css" href="statics/styles/ie.css">
+    <![endif]-->
+    <!--[if IE 6]>
+    <script type="text/javascript" src="statics/scripts/iepngfx.js"></script>
+    <![endif]-->
+    <style type="text/css">
+    html, body {
+        height: 100%;
+    }
+    </style>
+</head>
+<body style="min-width: 1024px">
+<div class="common-header">
+    <div class="common-nav">
+        <img src="statics/images/nav_logo.png" class="nav-logo">
+        <div class="nav-userinfo fr" style="width:150px;">
+            <span class="user-img-arrow index_arrow_down"></span>
+            <span class="nav-username"></span>
+            <img class="nav-photo user-img" width="32" height="32">
+        </div>
+        <div class="nav-login">
+            <button class="btn btn-primary login-btn"></button>
+        </div>
+    </div>
+</div>
+<div class="common-center"></div>
+<div class="share-footer">
+    <div class="lang-option">
+        <span class="lang-item" lang="zh-CN">简体中文</span>
+        <span class="lang-item" lang="zh-TW">繁體中文</span>
+        <span class="lang-item" lang="en">English</span>
+    </div>
+</div>
+<script type="text/javascript" src="statics/scripts/json2.js"></script>
+<script type="text/javascript" src="statics/scripts/es5-shim.min.js"></script>
+<script type="text/javascript" src="statics/scripts/jquery.min.js"></script>
+<script type="text/javascript" src="statics/scripts/underscore-min.js"></script>
+<script type="text/javascript" src="statics/scripts/backbone-min.js"></script>
+<script type="text/javascript" src="statics/scripts/webuploader.min.js"></script>
+<script type="text/javascript" src="statics/scripts/jquery.uploadify.min.js"></script>
+<script type="text/javascript" src="statics/xui/xui.min.js?v=1903131537"></script>
+<script type="text/javascript" src="statics/fancybox/jquery.fancybox.min.js"></script>
+<script type="text/javascript" src="statics/scripts/sea.js"></script>
+<script type="text/javascript">
+    window.i18n = new Lang();
+    i18n.loadPack('./locales/share/');
+    seajs.config({
+        base: "./modules/",
+        alias: {
+            "config": '../../config',
+            "util": '../base/util',
+            'Handlebars': '../../statics/scripts/handlebars.min',
+            'helper': '../base/helper'
+        },
+        map: [
+            ['.js', '.js?v=1903131537']
+        ]
+    });
+    seajs.use('share/main');
+</script>
+</body>
+</html>

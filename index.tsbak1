@@ -1,0 +1,2081 @@
+import Vue, { ComponentOptions } from 'vue'
+import Component from 'vue-class-component'
+import { Decoder } from 'socket.io-parser'
+import Clipboard from 'clipboard'
+import * as protobuf from 'protobufjs'
+import DNSMessage from 'dns-protocol/browser'
+import * as types from './types'
+import { appTemplateHtml, appTemplateHtmlStatic } from './variables'
+
+// tslint:disable-next-line:no-unused-expression
+new Clipboard('.clipboard')
+let pingId: NodeJS.Timer
+
+const decoder = new Decoder()
+const previewDecoder = new Decoder()
+const parameters = localStorage.getItem('parameters')
+const headers = localStorage.getItem('headers')
+const bookmarks = localStorage.getItem('bookmarks')
+let proxyWebSocket: WebSocket
+const toUrlHeaderName = 'x-to-url'
+const headersName = 'x-headers'
+
+// function sayHello(){
+//   console.log('sayHello')
+// }
+
+// sayHello()
+
+function formatTimeNumber(num: number) {
+  return num < 10 ? '0' + num : num.toString()
+}
+
+function getNow() {
+  return `${formatTimeNumber(new Date().getHours())}:${formatTimeNumber(new Date().getMinutes())}:${formatTimeNumber(new Date().getSeconds())}`
+}
+
+function PrefixInteger(num: string, length:number) { return (Array(length).join('0') + num).slice(-length)}
+
+type Parameter = {
+  key: string;
+  value: string;
+}
+
+type FormData = {
+  key: string;
+  value: string | File;
+  type: 'text' | 'file';
+}
+
+type Bookmark = {
+  name: string;
+  isSocketIO: boolean;
+  ignorePing: boolean;
+  baseUrl: string;
+  parameters: Parameter[];
+  anchor: string;
+  message: string;
+  showRaw: boolean;
+  showFormatted: boolean;
+  subprotocol: string;
+  protobufContent: string;
+  protobufTypePath: string;
+  messageType: string;
+  protocol: string;
+  host: string;
+  port: number;
+  httpMethod: string;
+  headers: types.Header[];
+  dnsQuestionName: string;
+  dnsTransactionId: number;
+}
+
+type Message = {
+  moment: string;
+  type: string;
+  reason?: string;
+  data?: string;
+  tips?: string;
+  rawData?: string;
+  formattedData?: string;
+  visible?: boolean;
+  visibilityButtonExtraBottom?: number;
+  isBinary?: boolean;
+  id: number;
+}
+
+/*type Userinfo = {
+      Id: number;
+      username: string;
+      address: string;
+      port: number;
+      sendMsg: string;
+      frameHeader: string;
+      frameEnd: string;
+      checkcodeStart: number;
+      checkcodeEnd: number;
+      checkCode: string;
+      totalBytes: number;
+}*/
+
+const stompConnectionMessage = `CONNECT
+login:admin
+passcode:admin
+accept-version:1.2,1.1,1.0
+heart-beat:0,0
+
+\0`
+
+const stompSubscriptionMessage = `SUBSCRIBE
+id:sub-0
+destination:/topic/test_topic
+
+\0`
+
+const stompSendMessage = `SEND
+destination:/queue/test
+content-type:text/plain
+
+hello queue test
+\0`
+
+const socketIOSendMessage = `42["a_event",{
+    "a_key":"a_value"
+}]`
+
+const bayeuxHandshakeMessage = `[{
+    "advice":{ "timeout":60000, "interval":0 },
+    "channel":"/meta/handshake",
+    "ext":{},
+    "id":"1",
+    "minimumVersion": "0.9",
+    "supportedConnectionTypes": ["websocket"],
+    "version": "1.0"
+}]`
+
+const bayeuxSubscribeMessage = `[{
+    "channel": "/meta/subscribe",
+    "clientId": "",
+    "id": "2",
+    "subscription": "/test_channel"
+}]`
+
+const bayeuxPublishMessage = `[{
+    "channel": "/test_channel",
+    "clientId": "",
+    "data": {},
+    "id": "3"
+}]`
+
+const bayeuxPingMessage = `[{
+    "advice": { "timeout": 0 },
+    "channel": "/meta/connect",
+    "clientId": "",
+    "connectionType": "websocket",
+    "id": "4"
+}]`
+
+const defaultProtobufContent = `package testPackage;
+syntax = "proto3";
+message Test {
+    required string data = 1;
+}`
+
+type DataChannelStatus = 'none' | 'init' | 'created offer' | 'answered offer' | 'set answer'
+
+@Component({
+  render: appTemplateHtml,
+  staticRenderFns: appTemplateHtmlStatic
+})
+export class App extends Vue {
+  messages: Message[] = []
+  parameters: Parameter[] = parameters ? JSON.parse(parameters) : [{ key: 'transport', value: 'websocket' }, { key: 'room', value: 'test' }]
+  previewResult: string = ''
+  isPreview: boolean = false
+  bookmarks: Bookmark[] = bookmarks ? JSON.parse(bookmarks) : []
+  isEditing: boolean = false
+  bookmarkName: string = ''
+  filter = ''
+  filterIsHidden: boolean = true
+  stompIsHidden = true
+  protobufIsHidden = true
+  dnsIsHidden = true
+  headers: types.Header[] = headers ? JSON.parse(headers) : [{ key: 'Content-Type', value: 'application/json' }]
+  socketIOIsHidden: boolean = true
+  formDatas: FormData[] = []
+  peerConnection = window.RTCPeerConnection ? new RTCPeerConnection({}) : null
+  dataChannelName = 'my_test_channel'
+  sessionDescription = ''
+  dataChannelStatus: DataChannelStatus = 'none'
+  id = 1
+  bayeuxIsHidden: boolean = true
+  useProxy = true
+  // new user or update user
+  newuserinfo: boolean = true
+  timePromise : any 
+
+  private protobufType: protobuf.Type | null = null
+  private dataChannel: RTCDataChannel | null = null
+  private websocket: WebSocket | null = null
+  private isSocketIOInternally: boolean = !!localStorage.getItem('isSocketIO')
+  private ignorePingInternally: boolean = !!localStorage.getItem('ignorePing')
+  private baseUrl: string = localStorage.getItem('baseUrl') || 'wss://copy.yorkyao.xyz/socket.io/'
+  private anchor: string = localStorage.getItem('anchor') || ''
+  private messageInternally: string = localStorage.getItem('message') || ''
+  // private showRawInternally: boolean = !!localStorage.getItem('showRaw')
+  private showRawInternally: boolean = true
+  private showFormattedInternally: boolean = !!localStorage.getItem('showFormatted')
+  private subprotocolInternally = localStorage.getItem('subprotocol') || ''
+  private protobufContentInternally = localStorage.getItem('protobufContent') || defaultProtobufContent
+  private protobufTypePathInternally = localStorage.getItem('protobufTypePath') || 'testPackage.Test'
+  private dnsTransactionIdInternally = +localStorage.getItem('dnsTransactionId')! || 43825
+  private dnsQuestionNameInternally = localStorage.getItem('dnsQuestionName') || 'www.example.com'
+  private messageTypeInternally = localStorage.getItem('messageType') || 'string'
+  // private protocolInternally = localStorage.getItem('protocol') || 'WebSocket'
+  private protocolInternally = localStorage.getItem('protocol') || 'TCP'
+  private hostInternally = localStorage.getItem('host') || 'localhost'
+  private portInternally = +localStorage.getItem('port')! || 9999
+  private tcpConnected = false
+  private httpMethodInternally = localStorage.getItem('httpMethod') || 'GET'
+  private isDataChannelConnected = false
+
+  private usernameInternally = localStorage.getItem('username') || ''
+
+  //new user info and check rules
+/*  private hostInternally_add = localStorage.getItem('host_add') || 'localhost'
+  private portInternally_add = +localStorage.getItem('port_add')! || 9999
+
+  private frameheaderInternally_add = localStorage.getItem('frameheader_add') || '01 03'
+  private frameendInternally_add = localStorage.getItem('frameend_add') || '18 17'
+  private checkstartInternally_add = +localStorage.getItem('checkstart_add')! || 24
+  private checkendInternally_add = +localStorage.getItem('checkend_add')! || 25
+  private checkcodeInternally_add = localStorage.getItem('checkcode_add') || '18 17'
+  private totalbytesInternally_add = +localStorage.getItem('totalbytes_add')! || 25*/
+
+  private idInternally_add = NaN
+  private hostInternally_add = ''
+  private portInternally_add = NaN
+  private sendmessageInternally_add = ''
+
+  private frameheaderInternally_add = ''
+  private frameendInternally_add = ''
+  private checkstartInternally_add = NaN
+  private checkendInternally_add = NaN
+  private checkcodeInternally_add = ''
+  private totalbytesInternally_add = 0 
+
+  //selected current check rules
+  private hostInternally_cur = localStorage.getItem('host_cur') || 'localhost'
+  private portInternally_cur = +localStorage.getItem('port_cur')! || 9999
+  //private sendmessageInternally_cur = localStorage.getItem('sendmessage_cur') || ''
+
+  private frameheaderInternally_cur = localStorage.getItem('frameheader_cur') || '01 03'
+  private frameendInternally_cur = localStorage.getItem('frameend_cur') || '18 17'
+  private checkstartInternally_cur = +localStorage.getItem('checkstart_cur')! || 24
+  private checkendInternally_cur = +localStorage.getItem('checkend_cur')! || 25
+  private checkcodeInternally_cur = localStorage.getItem('checkcode_cur') || '18 17'
+  private totalbytesInternally_cur = +localStorage.getItem('totalbytes_cur')! || 25
+
+
+/*  private return_yes_descInternally = localStorage.getItem('return_yes_desc') || ''
+  private return_yes_resInternally = localStorage.getItem('return_yes_res') || ''
+  private return_no_descInternally = localStorage.getItem('return_no_desc') || ''
+  private return_no_resInternally = localStorage.getItem('return_no_res') || ''
+  private frame_header_err_descInternally = localStorage.getItem('frame_header_err_desc') || ''
+  private frame_header_err_resInternally = localStorage.getItem('frame_header_err_res') || ''
+  private frame_end_err_descInternally = localStorage.getItem('frame_end_err_desc') || ''
+  private frame_end_err_resInternally = localStorage.getItem('frame_end_err_res') || ''
+  private check_code_err_descInternally = localStorage.getItem('check_code_err_desc') || ''
+  private check_code_err_resInternally = localStorage.getItem('check_code_err_res') || ''
+  private total_bytes_err_descInternally = localStorage.getItem('total_bytes_err_desc') || ''
+  private total_bytes_err_resInternally = localStorage.getItem('total_bytes_err_res') || ''*/
+  
+  private return_yes_descInternally = ''
+  private return_yes_resInternally = ''
+  private return_no_descInternally = ''
+  private return_no_resInternally = ''
+  private frame_header_err_descInternally = ''
+  private frame_header_err_resInternally = ''
+  private frame_end_err_descInternally = ''
+  private frame_end_err_resInternally = ''
+  private check_code_err_descInternally = ''
+  private check_code_err_resInternally = ''
+  private total_bytes_err_descInternally = ''
+  private total_bytes_err_resInternally = ''
+
+  //userinfos: Userinfo[] = []
+
+  userinfos:string[] = []; // for user info lists
+  checkrules:string[] = []; // for check rule lists
+
+  constructor(options?: ComponentOptions<Vue>) {
+    super(options)
+    if (this.peerConnection) {
+      this.peerConnection.ondatachannel = event => {
+        event.channel.onopen = e => {
+          app.isDataChannelConnected = true
+          this.messages.unshift({
+            moment: getNow(),
+            type: 'tips',
+            tips: 'peer connection opened.',
+            id: app.id++
+          })
+        }
+        event.channel.onclose = e => {
+          app.isDataChannelConnected = false
+          this.messages.unshift({
+            moment: getNow(),
+            type: 'tips',
+            tips: 'peer connection closed.',
+            id: app.id++
+          })
+        }
+        event.channel.onmessage = e => {
+          this.onmessage(e)
+        }
+      }
+    }
+  }
+
+  get httpMethod() {
+    return this.httpMethodInternally
+  }
+  set httpMethod(value: string) {
+    localStorage.setItem('httpMethod', value)
+    this.httpMethodInternally = value
+  }
+  //new added
+  get username() {
+    return this.usernameInternally
+  }
+
+  set username(value: string) {
+    localStorage.setItem('username', value)
+    this.usernameInternally = value
+  }
+
+  get host() {
+    return this.hostInternally
+  }
+
+  set host(value: string) {
+    localStorage.setItem('host', value)
+    this.hostInternally = value
+  }
+
+  get port() {
+    return this.portInternally
+  }
+  set port(value: number) {
+    localStorage.setItem('port', String(value))
+    this.portInternally = value
+  }
+
+  //new added
+  //new added user info and check rules
+  get id_add() {
+    return this.idInternally_add    
+  }
+  set id_add(value: number) {
+    localStorage.setItem('id_add', String(value))
+    this.idInternally_add = value
+  }
+  get host_add() {
+    return this.hostInternally_add    
+  }
+  set host_add(value: string) {
+    localStorage.setItem('host_add', value)
+    this.hostInternally_add = value
+  }
+  get port_add() {
+    return this.portInternally_add
+  }
+  set port_add(value: number) {
+    localStorage.setItem('port_add', String(value))
+    this.portInternally_add = value
+  }
+  get sendmessage_add() {
+    return this.sendmessageInternally_add    
+  }
+  set sendmessage_add(value: string) {
+    localStorage.setItem('sendmessage_add', value)
+    this.sendmessageInternally_add = value
+  }
+  get frameheader_add() {
+    return this.frameheaderInternally_add    
+  }
+  set frameheader_add(value: string) {
+    localStorage.setItem('frameheader_add', value)
+    this.frameheaderInternally_add = value
+  }
+  get frameend_add() {
+    return this.frameendInternally_add    
+  }
+  set frameend_add(value: string) {
+    localStorage.setItem('frameend_add', value)
+    this.frameendInternally_add = value
+  }
+  get checkstart_add() {
+    return this.checkstartInternally_add
+  }
+  set checkstart_add(value: number) {
+    localStorage.setItem('checkstart_add', String(value))
+    this.checkstartInternally_add = value
+  }
+  get checkend_add() {
+    return this.checkendInternally_add
+  }
+  set checkend_add(value: number) {
+    localStorage.setItem('checkend_add', String(value))
+    this.checkendInternally_add = value
+  }
+  get checkcode_add() {
+    return this.checkcodeInternally_add    
+  }
+  set checkcode_add(value: string) {
+    localStorage.setItem('checkcode_add', value)
+    this.checkcodeInternally_add = value
+  }
+  get totalbytes_add() {
+    return this.totalbytesInternally_add
+  }
+  set totalbytes_add(value: number) {
+    localStorage.setItem('totalbytes_add', String(value))
+    this.totalbytesInternally_add = value
+  }
+
+
+  get return_yes_desc() {
+    return this.return_yes_descInternally    
+  }
+  set return_yes_desc(value: string) {
+    localStorage.setItem('return_yes_desc', value)
+    this.return_yes_descInternally = value
+  }
+
+  get return_yes_res() {
+    return this.return_yes_resInternally    
+  }
+  set return_yes_res(value: string) {
+    localStorage.setItem('return_yes_res', value)
+    this.return_yes_resInternally = value
+  }
+
+  get return_no_desc() {
+    return this.return_no_descInternally    
+  }
+  set return_no_desc(value: string) {
+    localStorage.setItem('return_no_desc', value)
+    this.return_no_descInternally = value
+  }
+
+  get return_no_res() {
+    return this.return_no_resInternally    
+  }
+  set return_no_res(value: string) {
+    localStorage.setItem('return_no_res', value)
+    this.return_no_resInternally = value
+  }
+
+  get frame_header_err_desc() {
+    return this.frame_header_err_descInternally    
+  }
+  set frame_header_err_desc(value: string) {
+    localStorage.setItem('frame_header_err_desc', value)
+    this.frame_header_err_descInternally = value
+  }
+
+  get frame_header_err_res() {
+    return this.frame_header_err_resInternally    
+  }
+  set frame_header_err_res(value: string) {
+    localStorage.setItem('frame_header_err_res', value)
+    this.frame_header_err_resInternally = value
+  }
+
+  get frame_end_err_desc() {
+    return this.frame_end_err_descInternally    
+  }
+  set frame_end_err_desc(value: string) {
+    localStorage.setItem('frame_end_err_desc', value)
+    this.frame_end_err_descInternally = value
+  }
+  get frame_end_err_res() {
+    return this.frame_end_err_resInternally    
+  }
+  set frame_end_err_res(value: string) {
+    localStorage.setItem('frame_end_err_res', value)
+    this.frame_end_err_resInternally = value
+  }
+  get check_code_err_desc() {
+    return this.check_code_err_descInternally    
+  }
+  set check_code_err_desc(value: string) {
+    localStorage.setItem('check_code_err_desc', value)
+    this.check_code_err_descInternally = value
+  }
+  get check_code_err_res() {
+    return this.check_code_err_resInternally    
+  }
+  set check_code_err_res(value: string) {
+    localStorage.setItem('check_code_err_res', value)
+    this.check_code_err_resInternally = value
+  }
+  get total_bytes_err_desc() {
+    return this.total_bytes_err_descInternally    
+  }
+  set total_bytes_err_desc(value: string) {
+    localStorage.setItem('total_bytes_err_desc', value)
+    this.total_bytes_err_descInternally = value
+  }
+  get total_bytes_err_res() {
+    return this.total_bytes_err_resInternally    
+  }
+  set total_bytes_err_res(value: string) {
+    localStorage.setItem('total_bytes_err_res', value)
+    this.total_bytes_err_resInternally = value
+  }
+
+
+
+  //current selected user info and check rules
+  get host_cur() {
+    return this.hostInternally_cur    
+  }
+  set host_cur(value: string) {
+    localStorage.setItem('host_cur', value)
+    this.hostInternally_cur = value
+  }
+  get port_cur() {
+    return this.portInternally_cur
+  }
+  set port_cur(value: number) {
+    localStorage.setItem('port_cur', String(value))
+    this.portInternally_cur = value
+  }
+  get frameheader_cur() {
+    return this.frameheaderInternally_cur    
+  }
+  set frameheader_cur(value: string) {
+    localStorage.setItem('frameheader_cur', value)
+    this.frameheaderInternally_cur = value
+  }
+  get frameend_cur() {
+    return this.frameendInternally_cur    
+  }
+  set frameend_cur(value: string) {
+    localStorage.setItem('frameend_cur', value)
+    this.frameendInternally_cur = value
+  }
+  get checkstart_cur() {
+    return this.checkstartInternally_cur
+  }
+  set checkstart_cur(value: number) {
+    localStorage.setItem('checkstart_cur', String(value))
+    this.checkstartInternally_cur = value
+  }
+  get checkend_cur() {
+    return this.checkendInternally_cur
+  }
+  set checkend_cur(value: number) {
+    localStorage.setItem('checkend_cur', String(value))
+    this.checkendInternally_cur = value
+  }
+  get checkcode_cur() {
+    return this.checkcodeInternally_cur    
+  }
+  set checkcode_cur(value: string) {
+    localStorage.setItem('checkcode_cur', value)
+    this.checkcodeInternally_cur = value
+  }
+  get totalbytes_cur() {
+    return this.totalbytesInternally_cur
+  }
+  set totalbytes_cur(value: number) {
+    localStorage.setItem('totalbytes_cur', String(value))
+    this.totalbytesInternally_cur = value
+  }
+
+
+  get protocol() {
+    return this.protocolInternally
+  }
+  set protocol(value: string) {
+    if (value === 'HTTP' || this.messageType === 'FormData') {
+      this.messageType = 'string'
+    }
+    localStorage.setItem('protocol', value)
+    this.protocolInternally = value
+  }
+  get messageType() {
+    return this.messageTypeInternally
+  }
+  set messageType(value: string) {
+    localStorage.setItem('messageType', value)
+    this.messageTypeInternally = value
+  }
+  get protobufContent() {
+    return this.protobufContentInternally
+  }
+  set protobufContent(value: string) {
+    localStorage.setItem('protobufContent', value)
+    this.protobufContentInternally = value
+  }
+  get protobufTypePath() {
+    return this.protobufTypePathInternally
+  }
+  set protobufTypePath(value: string) {
+    localStorage.setItem('protobufTypePath', value)
+    this.protobufTypePathInternally = value
+  }
+  get dnsTransactionId() {
+    return this.dnsTransactionIdInternally
+  }
+  set dnsTransactionId(value: number) {
+    localStorage.setItem('dnsTransactionId', value.toString())
+    this.dnsTransactionIdInternally = value
+  }
+  get dnsQuestionName() {
+    return this.dnsQuestionNameInternally
+  }
+  set dnsQuestionName(value: string) {
+    localStorage.setItem('dnsQuestionName', value.toString())
+    this.dnsQuestionNameInternally = value
+  }
+  // tslint:disable-next-line:cognitive-complexity
+  get filteredMessages() {
+    return this.messages.filter(m => {
+      if (this.filter) {
+        return (typeof m.rawData === 'string' && m.rawData.indexOf(this.filter) !== -1)
+          || (typeof m.moment === 'string' && m.moment.indexOf(this.filter) !== -1)
+          || (typeof m.formattedData === 'string' && m.formattedData.indexOf(this.filter) !== -1)
+          || (typeof m.type === 'string' && m.type.indexOf(this.filter) !== -1)
+          || (typeof m.reason === 'string' && m.reason.indexOf(this.filter) !== -1)
+          || (typeof m.data === 'string' && m.data.indexOf(this.filter) !== -1)
+          || (typeof m.tips === 'string' && m.tips.indexOf(this.filter) !== -1)
+      } else {
+        return true
+      }
+    }).slice(0, 100)
+  }
+  get subprotocol() {
+    return this.subprotocolInternally
+  }
+  set subprotocol(value) {
+    localStorage.setItem('subprotocol', value)
+    this.subprotocolInternally = value
+  }
+  get canSaveAsBookmark() {
+    if (this.bookmarkName.trim() === '') {
+      return false
+    }
+    for (const bookmark of this.bookmarks) {
+      if (bookmark.name === this.bookmarkName) {
+        return false
+      }
+    }
+    return true
+  }
+  get isSocketIO() {
+    return this.isSocketIOInternally
+  }
+  set isSocketIO(value) {
+    localStorage.setItem('isSocketIO', value ? '1' : '')
+    this.isSocketIOInternally = value
+  }
+  get ignorePing() {
+    return this.ignorePingInternally
+  }
+  set ignorePing(value) {
+    localStorage.setItem('ignorePing', value ? '1' : '')
+    this.ignorePingInternally = value
+  }
+  get showRaw() {
+    return this.showRawInternally
+  }
+  set showRaw(value) {
+    localStorage.setItem('showRaw', value ? '1' : '')
+    this.showRawInternally = value
+  }
+  get showFormatted() {
+    return this.showFormattedInternally
+  }
+  set showFormatted(value) {
+    localStorage.setItem('showFormatted', value ? '1' : '')
+    this.showFormattedInternally = value
+  }
+  get message() {
+    return this.messageInternally
+  }
+  set message(value) {
+    localStorage.setItem('message', value)
+    this.messageInternally = value
+  }
+  get url() {
+    let url = this.baseUrl
+    if (this.parameters.length > 0) {
+      url += '?'
+      for (const parameter of this.parameters) {
+        url += parameter.key + '=' + parameter.value + '&'
+      }
+      url = url.substring(0, url.length - 1)
+    }
+    if (this.anchor) {
+      url += '#' + this.anchor
+    }
+    return url
+  }
+  set url(value) {
+    let index = value.indexOf('#')
+    if (index > -1) {
+      value = value.substring(0, index)
+      this.anchor = value.substring(index + 1)
+    } else {
+      this.anchor = ''
+    }
+
+    index = value.indexOf('?')
+    if (index > -1) {
+      this.baseUrl = value.substring(0, index)
+      const array = value.substring(index + 1).split('&')
+      const newParameters: Parameter[] = []
+      for (const tmp of array) {
+        index = tmp.indexOf('=')
+        if (index === -1) {
+          newParameters.push({
+            key: tmp,
+            value: ''
+          })
+        } else {
+          newParameters.push({
+            key: tmp.substring(0, index),
+            value: tmp.substring(index + 1)
+          })
+        }
+      }
+      this.parameters = newParameters
+    } else {
+      this.baseUrl = value
+      this.parameters = []
+    }
+
+    localStorage.setItem('baseUrl', this.baseUrl)
+    localStorage.setItem('parameters', JSON.stringify(this.parameters))
+    localStorage.setItem('anchor', this.anchor)
+  }
+  get isConnected() {
+    return (this.protocol === 'WebSocket' && this.websocket)
+      || (this.protocol === 'TCP' && this.tcpConnected)
+      || (this.protocol === 'WebRTC' && this.dataChannel && this.isDataChannelConnected)
+  }
+  get isDisconnected() {
+    return (this.protocol === 'WebSocket' && !this.websocket)
+      || (this.protocol === 'TCP' && !this.tcpConnected)
+      || (this.protocol === 'WebRTC' && !(this.dataChannel && this.isDataChannelConnected))
+  }
+  get shouldContainBody() {
+    return this.httpMethod === 'POST'
+      || this.httpMethod === 'PUT'
+      || this.httpMethod === 'PATCH'
+      || this.httpMethod === 'DELETE'
+      || this.httpMethod === 'LINK'
+      || this.httpMethod === 'UNLINK'
+  }
+  get shouldShowMessageTextarea() {
+    return (this.messageType === 'string' || this.protocol !== 'HTTP') && this.dnsIsHidden
+  }
+  createDataChannel() {
+    if (!this.peerConnection) {
+      return
+    }
+    this.dataChannel = this.peerConnection.createDataChannel(this.dataChannelName)
+    this.dataChannelStatus = 'init'
+    this.messages.unshift({
+      moment: getNow(),
+      type: 'tips',
+      tips: `create data channel successfully: ${this.dataChannelName}`,
+      id: this.id++
+    })
+  }
+  createOffer() {
+    if (!this.peerConnection) {
+      return
+    }
+    this.peerConnection.createOffer()
+      .then(offer => this.peerConnection!.setLocalDescription(offer))
+      .then(() => {
+        this.showLocalDescription()
+        this.dataChannelStatus = 'created offer'
+      }, (error: Error) => {
+        this.showError(error)
+      })
+  }
+  answerOffer() {
+    if (!this.peerConnection) {
+      return
+    }
+    try {
+      const offer = new RTCSessionDescription(JSON.parse(this.sessionDescription))
+      this.peerConnection.setRemoteDescription(offer as any)
+        .then(() => this.peerConnection!.createAnswer())
+        .then(answer => this.peerConnection!.setLocalDescription(answer as any))
+        .then(() => {
+          this.showLocalDescription()
+          this.dataChannelStatus = 'answered offer'
+        }, (error: Error) => {
+          this.showError(error)
+        })
+    } catch (error) {
+      this.showError(error)
+    }
+  }
+  setAnswer() {
+    if (!this.peerConnection) {
+      return
+    }
+    try {
+      const answer = new RTCSessionDescription(JSON.parse(this.sessionDescription))
+      this.peerConnection.setRemoteDescription(answer as any)
+        .then(() => {
+          this.messages.unshift({
+            moment: getNow(),
+            type: 'tips',
+            tips: 'set answer successfully.',
+            id: this.id++
+          })
+          this.dataChannelStatus = 'set answer'
+        }, (error: Error) => {
+          this.showError(error)
+        })
+    } catch (error) {
+      this.messages.unshift({
+        moment: getNow(),
+        type: 'error',
+        reason: error.message,
+        id: this.id++
+      })
+    }
+  }
+  loadProtobuf() {
+    if (this.protobufContent && this.protobufTypePath) {
+      try {
+        this.protobufType = protobuf.parse(this.protobufContent).root.lookup(this.protobufTypePath) as protobuf.Type
+        this.messages.unshift({
+          moment: getNow(),
+          type: 'tips',
+          tips: 'The protobuf definitions is loaded successfully.',
+          id: this.id++
+        })
+      } catch (error) {
+        this.messages.unshift({
+          moment: getNow(),
+          type: 'error',
+          reason: error.message,
+          id: this.id++
+        })
+      }
+    }
+  }
+  savingAsBookmark() {
+    this.isEditing = !this.isEditing
+    Vue.nextTick(() => {
+      const bookmarkNameElement = this.$refs.bookmarkName as HTMLElement
+      if (bookmarkNameElement) {
+        bookmarkNameElement.focus()
+      }
+    })
+  }
+  toggleFilter() {
+    this.filterIsHidden = !this.filterIsHidden
+    Vue.nextTick(() => {
+      const filterElement = this.$refs.filter as HTMLElement
+      if (filterElement) {
+        filterElement.focus()
+      }
+    })
+  }
+  toggleSocketIO() {
+    this.socketIOIsHidden = !this.socketIOIsHidden
+  }
+  toggleStomp() {
+    this.stompIsHidden = !this.stompIsHidden
+  }
+  toggleBayeux() {
+    this.bayeuxIsHidden = !this.bayeuxIsHidden
+  }
+  toggleProtobuf() {
+    this.protobufIsHidden = !this.protobufIsHidden
+  }
+  toggleDNS() {
+    this.dnsIsHidden = !this.dnsIsHidden
+  }
+  saveAsBookmark() {
+    this.isEditing = false
+    this.bookmarks.unshift({
+      name: this.bookmarkName,
+      isSocketIO: this.isSocketIO,
+      ignorePing: this.ignorePing,
+      baseUrl: this.baseUrl,
+      parameters: this.parameters,
+      anchor: this.anchor,
+      message: this.message,
+      showRaw: this.showRaw,
+      showFormatted: this.showFormatted,
+      subprotocol: this.subprotocol,
+      protobufContent: this.protobufContent,
+      protobufTypePath: this.protobufTypePath,
+      messageType: this.messageType,
+      protocol: this.protocol,
+      host: this.host,
+      port: this.port,
+      httpMethod: this.httpMethod,
+      headers: this.headers,
+      dnsTransactionId: this.dnsTransactionId,
+      dnsQuestionName: this.dnsQuestionName
+    })
+    localStorage.setItem('bookmarks', JSON.stringify(this.bookmarks))
+  }
+  deleteBookmark(index: number) {
+    this.bookmarks.splice(index, 1)
+    localStorage.setItem('bookmarks', JSON.stringify(this.bookmarks))
+  }
+  useBookmark(index: number) {
+    const bookmark = this.bookmarks[index]
+    this.isSocketIO = bookmark.isSocketIO
+    this.ignorePing = bookmark.ignorePing
+    this.showRaw = bookmark.showRaw
+    this.showFormatted = bookmark.showFormatted
+    this.message = bookmark.message
+    this.baseUrl = bookmark.baseUrl
+    const newParameters = JSON.stringify(bookmark.parameters)
+    this.parameters = JSON.parse(newParameters)
+    this.anchor = bookmark.anchor
+    localStorage.setItem('baseUrl', bookmark.baseUrl)
+    localStorage.setItem('parameters', newParameters)
+    localStorage.setItem('anchor', bookmark.anchor)
+    this.subprotocol = bookmark.subprotocol
+    this.protobufContent = bookmark.protobufContent
+    this.protobufTypePath = bookmark.protobufTypePath
+    this.messageType = bookmark.messageType
+    this.protocol = bookmark.protocol
+    this.host = bookmark.host
+    this.port = bookmark.port
+    this.httpMethod = bookmark.httpMethod
+    this.headers = bookmark.headers
+    localStorage.setItem('headers', JSON.stringify(bookmark.headers))
+  }
+  setKeyOfParameter(index: number, e: KeyboardEvent) {
+    this.parameters[index].key = (e.target as HTMLInputElement).value
+    localStorage.setItem('parameters', JSON.stringify(this.parameters))
+  }
+  setKeyOfHeader(index: number, e: KeyboardEvent) {
+    this.headers[index].key = (e.target as HTMLInputElement).value
+    localStorage.setItem('headers', JSON.stringify(this.headers))
+  }
+  setKeyOfFormData(index: number, e: KeyboardEvent) {
+    this.formDatas[index].key = (e.target as HTMLInputElement).value
+  }
+  setValueOfParameter(index: number, e: KeyboardEvent) {
+    this.parameters[index].value = (e.target as HTMLInputElement).value
+    localStorage.setItem('parameters', JSON.stringify(this.parameters))
+  }
+  setValueOfHeader(index: number, e: KeyboardEvent) {
+    this.headers[index].value = (e.target as HTMLInputElement).value
+    localStorage.setItem('headers', JSON.stringify(this.headers))
+  }
+  setValueOfFormData(index: number, e: KeyboardEvent) {
+    const element = e.target as HTMLInputElement
+    this.formDatas[index].value = element.files && element.files.length > 0 ? element.files[0] : element.value
+  }
+  setTypeOfFormData(index: number, e: KeyboardEvent) {
+    this.formDatas[index].type = (e.target as HTMLSelectElement).value as 'text' | 'file'
+  }
+  deleteParameter(index: number) {
+    this.parameters.splice(index, 1)
+    localStorage.setItem('parameters', JSON.stringify(this.parameters))
+  }
+  deleteHeader(index: number) {
+    this.headers.splice(index, 1)
+    localStorage.setItem('headers', JSON.stringify(this.headers))
+  }
+  deleteFormData(index: number) {
+    this.formDatas.splice(index, 1)
+  }
+  addParameter() {
+    this.parameters.push({
+      key: '',
+      value: ''
+    })
+  }
+  addHeader() {
+    this.headers.push({
+      key: '',
+      value: ''
+    })
+  }
+  addFormData() {
+    this.formDatas.push({
+      key: '',
+      value: '',
+      type: 'text'
+    })
+  }
+  connect() {
+    if (this.protocol === 'WebSocket') {
+      try {
+        this.websocket = this.subprotocol ? new WebSocket(this.url, this.subprotocol) : new WebSocket(this.url)
+      } catch (error) {
+        this.messages.unshift({
+          moment: getNow(),
+          type: 'error',
+          reason: error.message,
+          id: this.id++
+        })
+        return
+      }
+
+      this.websocket.binaryType = 'arraybuffer'
+      this.websocket.onopen = this.onopen
+      this.websocket.onclose = this.onclose
+      this.websocket.onmessage = this.onmessage
+      this.websocket.onerror = this.onerror
+      if (this.isSocketIO) {
+        pingId = setInterval(this.ping, 25000)
+      }
+    } else if (this.protocol === 'TCP') {
+      if (proxyWebSocket && !isNaN(+this.port)) {
+        const protocol: types.Protocol = {
+          kind: types.ProtocolKind.tcpConnect,
+          host: this.host,
+          port: +this.port
+        }
+
+        proxyWebSocket.send(JSON.stringify(protocol))
+      }
+    }
+  }
+
+  //new added
+  onuserinfoSaved_test() {
+    console.log("onuserinfoSaved test")
+    this.host_add = ''
+    this.port_add = NaN
+    this.sendmessage_add = ''
+
+    this.frameheader_add = ''
+    this.frameend_add = ''
+    this.checkstart_add = NaN
+    this.checkend_add = NaN
+    this.totalbytes_add = NaN
+    this.checkcode_add = ''
+  }
+
+  onselectedaddress(ip: string, port: number, sendMessage: string, frameHeader: string, frameEnd: string, checkcodeStart: number, checkcodeEnd: number, checkCode: string, totalBytes: number) {
+    this.close() // close the current connection
+    this.host = ip
+    this.port = +port
+    this.message = sendMessage
+    this.frameheader_cur = frameHeader
+    this.frameend_cur = frameEnd
+    this.checkstart_cur = checkcodeStart
+    this.checkend_cur = checkcodeEnd
+    this.checkcode_cur = checkCode
+    this.totalbytes_cur = totalBytes
+    console.log("this.port_cur:", this.port_cur)
+  }
+  
+  onuserinfonew() {
+    this.newuserinfo = true
+
+    this.host_add = ''
+    this.port_add = NaN
+    this.sendmessage_add = ''
+
+    this.frameheader_add = ''
+    this.frameend_add = ''
+    this.checkstart_add = NaN
+    this.checkend_add = NaN
+    this.totalbytes_add = NaN
+    this.checkcode_add = ''
+  }
+
+  onedituserinfo(userinfo: string) {
+      console.log("onedituserinfo")
+      console.log(userinfo)
+
+      this.id_add = (Object(userinfo)).Id
+      this.host_add = (Object(userinfo)).ip
+      this.port_add = (Object(userinfo)).port
+      this.sendmessage_add = (Object(userinfo)).sendmsg
+
+      this.frameheader_add = (Object(userinfo)).frame_header
+      this.frameend_add = (Object(userinfo)).frame_end
+      this.checkstart_add = (Object(userinfo)).check_code_start
+      this.checkend_add = (Object(userinfo)).check_code_end
+      this.checkcode_add = (Object(userinfo)).check_code
+      this.totalbytes_add = (Object(userinfo)).total_bytes
+
+      this.newuserinfo = false
+  }
+  
+  onuserinfoDelete(Id: number) {
+        let formattedData: string | undefined
+
+        const protocol: types.Protocol = {
+          kind: types.ProtocolKind.userinfoDelete,
+          Id
+        }
+
+        formattedData = JSON.stringify(protocol, null, '  ')
+        proxyWebSocket.send(JSON.stringify(protocol))
+        console.log(formattedData)
+
+        // reload userinfo list
+        onuserinfoListed_test(this.username)
+  }
+
+/*  private onuserinfoListed() {
+        console.log('onuserinfoListed')
+        let formattedData: string | undefined
+
+        const protocol: types.Protocol = {
+          kind: types.ProtocolKind.userinfoList,
+          Id: 1
+        }
+        console.log('1003')
+        console.log(protocol)
+        formattedData = JSON.stringify(protocol, null, '  ')
+        proxyWebSocket.send(JSON.stringify(protocol))
+        console.log('1007')
+        console.log(formattedData)
+  }*/
+
+  sendMessage() {
+    debugger;
+    console.log("sendMessage")
+    this.send(this.message)
+
+    this.ptimer(1) // set timer for response data
+  }
+
+  //new added timer function
+  ptimer(flag: number ){ //flag是一个标识，何时计时和何时停止 
+    //var second = 0 
+    if( flag == 1){ 
+      this.timePromise = setTimeout( ()=>{
+        //回掉函数开始计时了
+        alert('没有数据返回.') 
+        //second++
+        //other actions
+      },types.Timer.timer) 
+    } else if( flag == 0 ) {
+       //other actions
+       //清除计时器
+       console.log("clear timer")
+       window.clearInterval(this.timePromise) 
+    }
+  }
+ 
+  useStompConnectionMessage() {
+    this.message = stompConnectionMessage
+  }
+  useStompSubscriptionMessage() {
+    this.message = stompSubscriptionMessage
+  }
+  useStompSendMessage() {
+    this.message = stompSendMessage
+  }
+  useSocketIOSendMessage() {
+    this.message = socketIOSendMessage
+  }
+  useBayeuxHandshakeMessage() {
+    this.message = bayeuxHandshakeMessage
+  }
+  useBayeuxSubscribeMessage() {
+    this.message = bayeuxSubscribeMessage
+  }
+  useBayeuxPublishMessage() {
+    this.message = bayeuxPublishMessage
+  }
+  useBayeuxPingMessage() {
+    this.message = bayeuxPingMessage
+  }
+  clear() {
+    this.messages = []
+  }
+  previewMessage() {
+    this.isPreview = true
+    if (this.protocol === 'WebSocket' && this.isSocketIO) {
+      this.previewResult = ''
+      previewDecoder.add(this.message)
+    } else if (this.messageType === 'Uint8Array') {
+      try {
+        this.previewResult = new TextDecoder('utf-8').decode(new Uint8Array(this.message.split(',').map(m => +m)))
+      } catch (error) {
+        this.previewResult = error
+      }
+    } else {
+      try {
+        this.previewResult = JSON.stringify(JSON.parse(this.message), null, '    ')
+      } catch (error) {
+        this.previewResult = error
+      }
+    }
+  }
+  cancelPreview() {
+    this.isPreview = false
+  }
+  showTips() {
+    this.messages.unshift({
+      moment: getNow(),
+      type: 'tips',
+      tips: 'Tips: \n' +
+      "1. for socket.io, if you connect 'http://localhost', in ws's perspective, you connected 'ws://localhost/socket.io/?transport=websocket'\n" +
+      "2. for socket.io, if you connect 'https://localhost', in ws's perspective, you connected 'wss://localhost/socket.io/?transport=websocket'\n" +
+      "3. chrome's developer tool is a good tool to view ws connection and messages\n" +
+      "4. for ActiveMQ, the default url is 'ws://localhost:61614' ,the subprotocol should be 'stomp'\n" +
+      '5. for HTTP, set `Content-Type` be `application/x-www-form-urlencoded`, `multipart/form-data` or `text/plain` to avoid CORS preflight',
+      id: this.id++
+    })
+  }
+  close() {
+    this.messages.unshift({
+      moment: getNow(),
+      type: 'tips',
+      tips: 'Is going to disconnect manually.',
+      id: this.id++
+    })
+    if (this.protocol === 'WebSocket') {
+      this.websocket!.close()
+    } else if (this.protocol === 'TCP') {
+      const protocol: types.Protocol = {
+        kind: types.ProtocolKind.tcpDisconnect
+      }
+      proxyWebSocket.send(JSON.stringify(protocol))
+    }
+  }
+  onmessage(e: MessageEvent) {
+    console.log("onmessage") //new added
+    this.onmessageAccepted(e.data, e.type)
+  }
+  toggleMessageVisibility(message: Message) {
+    message.visible = !this.messageVisibility(message)
+  }
+  resultId(index: number) {
+    return `result-${index}`
+  }
+  messageVisibility(message: Message) {
+    return message.visible !== undefined
+      ? message.visible
+      : (message.formattedData ? this.showFormatted : this.showRaw)
+  }
+  visibilityButtonStyle(message: Message) {
+    return {
+      position: 'absolute',
+      bottom: (this.messageVisibility(message) ? (10 + message.visibilityButtonExtraBottom!) : 0) + 'px',
+      right: 10 + 'px'
+    }
+  }
+  private showError(error: Error) {
+    this.messages.unshift({
+      moment: getNow(),
+      type: 'error',
+      reason: error.message,
+      id: this.id++
+    })
+  }
+  // tslint:disable-next-line:cognitive-complexity
+  private send(message: string) {
+    let data: string | Uint8Array |  undefined
+    let isBinary = true
+
+    console.log("this.messageType" + this.messageType);
+    if (this.messageType === 'Uint8Array') {
+      //let test1 : number[] = [0x1];
+      //test1 = this.message.split(' ').map(m => +m);
+      //data = new Uint8Array(test1);
+
+      //data = new Uint8Array(this.message.split('').map(m => +m))
+      let str : string = this.message;
+      var strs = str.split(' ');
+      var out = new ArrayBuffer(strs.length);
+      var u16a= new Uint8Array(out);
+      for(var i =0, j = 0; i<strs.length;i++){
+        u16a[j]=parseInt(strs[i], 16);
+        j++;
+      }
+      data = u16a;
+      console.log("data is");
+      console.log(data);
+
+
+    } else if (this.messageType === 'protobuf') {
+      if (this.protobufType) {
+        try {
+          data = this.protobufType.encode(JSON.parse(this.message)).finish()
+        } catch (error) {
+          this.messages.unshift({
+            moment: getNow(),
+            type: 'error',
+            reason: error.message,
+            id: this.id++
+          })
+          return
+        }
+      } else {
+        this.messages.unshift({
+          moment: getNow(),
+          type: 'error',
+          reason: 'Protobuf file content is not loaded.',
+          id: this.id++
+        })
+        return
+      }
+    } else {
+      data = (this.message)
+      //data = strToHexCharCode(this.message)
+      //data = this.message
+      isBinary = false
+    }
+
+    let rawData: string | undefined
+    let formattedData: string | undefined
+    if (this.protocol === 'WebSocket') {
+      if (this.websocket && data) {
+        if (!(this.ignorePing && message === '2')) {
+          rawData = message
+          formattedData = data.toString()
+        }
+        this.websocket.send(data)
+      }
+    } else if (this.protocol === 'TCP') {
+      if (proxyWebSocket && data) {
+
+        
+                let str : string = ''
+                if (typeof data === 'string') {
+                  str = data;
+                } else {
+                  //let num : number = 0x01;
+                  for(var i =0; i<data.length;i++){
+                    //num = data[i];
+                    str += data[i].toString(16) + ' '
+                  }
+                }
+        
+        const protocol: types.Protocol = {
+          kind: types.ProtocolKind.tcpSend,
+          isBinary,
+          message: str
+          //message: typeof data === 'string' ? data : data.toString()
+        }
+        formattedData = JSON.stringify(protocol, null, '  ')
+        proxyWebSocket.send(JSON.stringify(protocol))
+      }
+    } else if (this.protocol === 'UDP') {
+      if (proxyWebSocket) {
+        if (!this.dnsIsHidden) {
+          const request = new DNSMessage(this.dnsTransactionId)
+          request.addQuestion(this.dnsQuestionName)
+          formattedData = JSON.stringify(request, null, '  ')
+          data = request.encode()
+          isBinary = true
+        }
+
+        if (data) {
+          const protocol: types.Protocol = {
+            kind: types.ProtocolKind.udpSend,
+            address: this.host,
+            port: +this.port,
+            isBinary,
+            message: typeof data === 'string' ? data : data.toString()
+          }
+          if (!formattedData) {
+            formattedData = JSON.stringify(protocol, null, '  ')
+          }
+          proxyWebSocket.send(JSON.stringify(protocol))
+        }
+      }
+    } else if (this.protocol === 'HTTP') {
+      const request = new XMLHttpRequest()
+      request.onloadend = e => {
+        this.onmessageAccepted(`${request.status} ${request.statusText}\n${request.getAllResponseHeaders()}`, '')
+        this.onmessageAccepted(request.response, '')
+      }
+      request.upload.onprogress = e => {
+        const percent = Math.round(e.loaded * 100 / e.total)
+        this.onmessageAccepted(`${e.loaded} / ${e.total} (${percent}%)`, '')
+      }
+      if (this.useProxy) {
+        request.open(this.httpMethod, '/proxy')
+        request.setRequestHeader(toUrlHeaderName, this.url)
+        request.setRequestHeader(headersName, JSON.stringify(this.headers.filter(h => h.key)))
+      } else {
+        request.open(this.httpMethod, this.url)
+        for (const header of this.headers) {
+          request.setRequestHeader(header.key, header.value)
+        }
+      }
+
+      if (this.shouldContainBody) {
+        if (this.messageType === 'FormData') {
+          const formData = new FormData()
+          for (const { key, value } of this.formDatas) {
+            if (key) {
+              formData.append(key, value)
+            }
+          }
+          request.send(formData)
+        } else {
+          request.send(this.message)
+        }
+      } else {
+        request.send()
+      }
+    } else if (this.protocol === 'WebRTC') {
+      if (this.dataChannel) {
+        rawData = message
+        this.dataChannel.send(message)
+      }
+    }
+
+    if (rawData) {
+      this.messages.unshift({
+        moment: getNow(),
+        type: 'out',
+        rawData,
+        visible: undefined,
+        visibilityButtonExtraBottom: 0,
+        isBinary,
+        id: this.id++
+      })
+    }
+
+    if (formattedData) {
+      this.messages.unshift({
+        moment: getNow(),
+        type: 'out',
+        formattedData,
+        visible: undefined,
+        visibilityButtonExtraBottom: 0,
+        isBinary,
+        id: this.id++
+      })
+    }
+  }
+  private ping() {
+    this.send('2')
+  }
+  private onopen(e: Event) {
+    this.messages.unshift({
+      moment: getNow(),
+      type: e.type,
+      id: this.id++
+    })
+  }
+  private onclose(e: CloseEvent) {
+    this.messages.unshift({
+      moment: getNow(),
+      type: e.type,
+      reason: e.reason,
+      id: this.id++
+    })
+    this.websocket = null
+    clearInterval(pingId)
+  }
+
+  private GetRequest() {
+     var url = location.search; //获取url中"?"符后的字串
+     if (url.indexOf("?") != -1) {    //判断是否有参数
+        var str = url.substr(1); //从第一个字符开始 因为第0个是?号 获取所有除问号的所有符串
+        var strs = str.split("=");   //用等号进行分隔 （因为知道只有一个参数 所以直接用等号进分隔 如果有多个参数 要用&号分隔 再用等号进行分隔）
+        this.username = strs[1];
+        console.log("get url parameters:", strs)
+        //alert(strs[1]);          //直接弹出第一个参数 （如果有多个参数 还要进行循环的）
+     }
+  }
+
+  // new added
+  private oncheckruleList() {
+        let formattedData: string | undefined
+
+        const protocol: types.Protocol = {
+            kind: types.ProtocolKind.checkruleList,
+        }
+        formattedData = JSON.stringify(protocol, null, '  ')
+        proxyWebSocket.send(JSON.stringify(protocol))
+        console.log(formattedData)
+  }
+
+  // tslint:disable-next-line:cognitive-complexity
+  private onuserinfoSaved(username: string, address: string, port: number, sendMsg: string, frameHeader: string, frameEnd: string, checkcodeStart: number,
+                            checkcodeEnd: number, checkcode: string, totalbytes: number) {
+        let formattedData: string | undefined
+
+        console.log("host:", this.hostInternally_add)
+        console.log(">>> host:", this.host_add)        
+
+        this.GetRequest()
+
+        //if (this.newuserinfo) {
+          const protocol: types.Protocol = {
+            kind: types.ProtocolKind.userinfoSave,
+            newuser: this.newuserinfo,
+            Id: this.id_add, username: this.username, address:this.host_add, port:this.port_add, sendMsg:this.sendmessage_add, frameHeader:this.frameheader_add, frameEnd:this.frameend_add, 
+            checkcodeStart:this.checkstart_add, checkcodeEnd:this.checkend_add, checkCode:this.checkcode_add, totalBytes:this.totalbytes_add
+          }
+          formattedData = JSON.stringify(protocol, null, '  ')
+          proxyWebSocket.send(JSON.stringify(protocol))
+          console.log(formattedData)
+
+          // reload userinfo list
+          onuserinfoListed_test(this.username)
+
+
+   /*     } else {
+          const protocol: types.Protocol = {
+            kind: types.ProtocolKind.userinfoUpdate,
+            Id:this.id_add, address:this.host_add, port:this.port_add, sendMsg:this.sendmessage_add, frameHeader:this.frameheader_add, frameEnd:this.frameend_add, 
+            checkcodeStart:this.checkstart_add, checkcodeEnd:this.checkend_add, checkCode:this.checkcode_add, totalBytes:this.totalbytes_add
+          }
+
+          formattedData = JSON.stringify(protocol, null, '  ')
+          proxyWebSocket.send(JSON.stringify(protocol))
+          console.log(formattedData)
+        }*/
+
+ /*       const protocol: types.Protocol = {
+          kind: types.ProtocolKind.userinfoSave,
+          username, address, port, sendMsg, frameHeader, frameEnd, checkcodeStart, checkcodeEnd, checkcode, totalbytes
+        }
+*/
+  }
+
+  // new added
+  // tslint:disable-next-line:cognitive-complexity
+/*  private onresultSaved(return_yes_desc:string, return_yes_res:string, return_no_desc:string, return_no_res:string, frame_header_err_desc:string,
+                       frame_header_err_res:string, frame_end_err_desc:string, frame_end_err_res:string, check_code_err_desc:string, check_code_err_res:string,
+                       total_bytes_err_desc:string, total_bytes_err_res:string) {
+
+        let formattedData: string | undefined
+
+        const protocol: types.Protocol = {
+          kind: types.ProtocolKind.userresultSave,
+          return_yes_desc:this.return_yes_desc, return_yes_res:this.return_yes_res, return_no_desc:this.return_no_desc, 
+          return_no_res:this.return_no_res, frame_header_err_desc:this.frame_header_err_desc, frame_header_err_res:this.frame_header_err_res,
+          frame_end_err_desc:this.frame_end_err_desc, frame_end_err_res:this.frame_end_err_res, check_code_err_desc:this.check_code_err_desc, 
+          check_code_err_res:this.check_code_err_res, total_bytes_err_desc:this.total_bytes_err_desc, total_bytes_err_res:this.total_bytes_err_res
+        }
+        formattedData = JSON.stringify(protocol, null, '  ')
+        proxyWebSocket.send(JSON.stringify(protocol))
+        console.log(formattedData)
+  }*/
+
+  private onresultSaved() {
+        console.log("onresultSaved_test")
+
+        let formattedData: string | undefined
+        console.log("==========this.return_yes_desc", this.return_yes_desc)
+
+        const protocol: types.Protocol = {
+          kind: types.ProtocolKind.userresultSave,
+          return_yes_desc:this.return_yes_desc, return_yes_res:this.return_yes_res, return_no_desc:this.return_no_desc, 
+          return_no_res:this.return_no_res, frame_header_err_desc:this.frame_header_err_desc, frame_header_err_res:this.frame_header_err_res,
+          frame_end_err_desc:this.frame_end_err_desc, frame_end_err_res:this.frame_end_err_res, check_code_err_desc:this.check_code_err_desc, 
+          check_code_err_res:this.check_code_err_res, total_bytes_err_desc:this.total_bytes_err_desc, total_bytes_err_res:this.total_bytes_err_res
+        }
+        formattedData = JSON.stringify(protocol, null, '  ')
+        proxyWebSocket.send(JSON.stringify(protocol))
+        console.log(formattedData)
+  }
+
+  //new added
+/*  private onuserinfoResearch(username: string) {
+        let formattedData: string | undefined
+
+        const protocol: types.Protocol = {
+          kind: types.ProtocolKind.userinfoResearch,
+          username
+        }
+
+        formattedData = JSON.stringify(protocol, null, '  ')
+        proxyWebSocket.send(JSON.stringify(protocol))
+        console.log(formattedData)
+  }*/
+
+// new added
+  // tslint:disable-next-line:cognitive-complexity
+/*  private onuserinfoUpdated(Id: number, address: string, port: number, sendMsg: string, frameHeader: string, frameEnd: string, checkcodeStart: number,
+                            checkcodeEnd: number, checkCode: string, totalBytes: number) {
+        let formattedData: string | undefined
+
+        const protocol: types.Protocol = {
+          kind: types.ProtocolKind.userinfoUpdate,
+          Id, username:'test', address, port, sendMsg, frameHeader, frameEnd, checkcodeStart, checkcodeEnd, checkCode, totalBytes
+        }
+
+        formattedData = JSON.stringify(protocol, null, '  ')
+        proxyWebSocket.send(JSON.stringify(protocol))
+        console.log(formattedData)
+  }*/
+
+/*  private onuserinfoListed(Id: number) {
+        let formattedData: string | undefined
+
+        const protocol: types.Protocol = {
+          kind: types.ProtocolKind.userinfoList,
+          Id
+        }
+
+        formattedData = JSON.stringify(protocol, null, '  ')
+        proxyWebSocket.send(JSON.stringify(protocol))
+        console.log(formattedData)
+  }
+*/
+
+/*  private onmessageCheck(rawData: string) {
+    let str = ""
+    const check: types.check = {
+      hasReturnDes: str,
+      hasReturnRes: str,
+      noReturnDes: str,
+      noReturnRes: str,
+      frameHeaderErrDes: str,
+      frameHeaderErrRes: str,
+      frameEndErrDes: str,
+      frameEndErrRes: str,
+      checkCodeErrDes: str,
+      checkCodeErrRes: str,
+      typeCodeErrDes: str,
+      typeCodeErrRes: str
+    }
+  }
+*/
+
+  private check_data(checkData: string): string { 
+    // 语句
+      console.log("len:", checkData.length)
+      var len = (Math.floor(checkData.length/3));
+      console.log("len:", len.toString())
+      if (len === types.CheckRule.totalBytes) {
+        console.log("total bytes is ok")
+/*        this.total_bytes_err_desc = ''
+        this.total_bytes_err_res  = ''*/
+      } else {
+        console.log("total bytes is error")
+
+        //return('总字节数:' + (Math.floor(checkData.length/3)).toString() + '\n' + types.CheckKind.totalBytesErrDes + ' ' + types.CheckKind.totalBytesErrRes)
+        return('当前总字节数 : ' + len.toString() + '\n\n' + '正确总字节数 : ' + types.CheckRule.totalBytes + '\n\n' + '现象描述 : ' +  types.CheckKind.totalBytesErrDes + '\n\n校验结论 : ' + types.CheckKind.totalBytesErrRes)
+
+/*      check.totalBytesErrDes = types.CheckKind.totalBytesErrDes
+        check.totalBytesErrRes = types.CheckKind.totalBytesErrRes
+        this.total_bytes_err_desc = types.CheckKind.totalBytesErrDes
+        this.total_bytes_err_res  = types.CheckKind.totalBytesErrRes*/
+      }
+
+      console.log("checkData" + checkData)
+      var subcheck = checkData.substring(1, 6)
+      console.log("********* (1,6): "    + subcheck + " length:" + subcheck.length)
+      if (subcheck === types.CheckRule.frameHeader) {
+        console.log("frame header ok")
+/*        this.frame_header_err_desc = ''
+        this.frame_header_err_res  = ''*/
+      } else {
+        console.log("frame header error")
+/*        check.frameHeaderErrDes = types.CheckKind.frameHeaderErrDes 
+        check.frameHeaderErrRes = types.CheckKind.frameHeaderErrRes
+
+        this.frame_header_err_desc = types.CheckKind.frameHeaderErrDes
+        this.frame_header_err_res  = types.CheckKind.frameHeaderErrRes*/
+        return('当前帧头 : ' + subcheck + '\n\n' + '正确帧头 : ' + types.CheckRule.frameHeader + '\n\n' + '现象描述 : ' +  types.CheckKind.frameHeaderErrDes + '\n\n校验结论 : ' + types.CheckKind.frameHeaderErrRes)
+      }
+      
+      console.log("frame end :", checkData.indexOf('18'))
+      subcheck = checkData.substring(70, 75)
+      console.log("subcheck:" + subcheck)
+      if ( subcheck === types.CheckRule.frameEnd) {
+        console.log("frame End ok")
+/*        this.frame_end_err_desc = ''
+        this.frame_end_err_res  = ''*/
+      } else {
+        console.log("frame end error")
+/*        check.frameEndErrDes = types.CheckKind.frameEndErrDes
+        check.frameEndErrRes = types.CheckKind.frameEndErrRes
+
+        this.frame_end_err_desc = types.CheckKind.frameEndErrDes
+        this.frame_end_err_res  = types.CheckKind.frameEndErrRes*/
+        //return('帧尾:' + subcheck + '\n' + types.CheckKind.frameEndErrDes + ' ' + types.CheckKind.frameEndErrRes)
+        return('当前帧尾 : ' + subcheck + '\n\n' + '正确帧尾 : ' + types.CheckRule.frameEnd + '\n\n' + '现象描述 : ' +  types.CheckKind.frameEndErrDes + '\n\n校验结论 : ' + types.CheckKind.frameEndErrRes)
+      }
+
+      console.log("check code:", checkData.indexOf('18'))
+
+      subcheck = checkData.substring(70, 75)
+      console.log("subcheck:" + subcheck)
+
+      if (subcheck === types.CheckRule.checkCode) {
+        console.log("check code is ok")
+/*        this.check_code_err_desc = ''
+        this.check_code_err_res  = ''*/
+      } else {
+        console.log("check code is error")
+/*        check.checkCodeErrDes = types.CheckKind.checkCodeErrDes
+        check.checkCodeErrRes = types.CheckKind.checkCodeErrRes
+
+        this.check_code_err_desc = types.CheckKind.checkCodeErrDes
+        this.check_code_err_res  = types.CheckKind.checkCodeErrRes*/
+        //return('校验码:' + subcheck + '\n' + types.CheckKind.checkCodeErrDes + ' ' + types.CheckKind.checkCodeErrRes)
+        return('当前校验码 : ' + subcheck + '\n\n' + '正确校验码 : ' + types.CheckRule.checkCode + '\n\n' + '现象描述 : ' +  types.CheckKind.checkCodeErrDes + '\n\n校验结论 : ' + types.CheckKind.checkCodeErrRes)
+      }
+
+      return('校验结论 : 数据接受正常.')
+  }
+
+  // tslint:disable-next-line:cognitive-complexity
+  private onmessageAccepted(eventData: any, eventType: string) {
+
+    //new added
+/*    var check: types.Check = {
+      hasReturnDes: str,
+      hasReturnRes: str,
+      noReturnDes: str,
+      noReturnRes: str,
+      frameHeaderErrDes: str,
+      frameHeaderErrRes: str,
+      frameEndErrDes: str,
+      frameEndErrRes: str,
+      checkCodeErrDes: str,
+      checkCodeErrRes: str,
+      totalBytesErrDes: str,
+      totalBytesErrRes: str
+    }*/
+
+    if (this.ignorePing && eventData === '3') {
+      return
+    }
+
+    const isBinary = typeof eventData !== 'string'
+
+    if (eventData === '3') {
+      this.messages.unshift({
+        moment: getNow(),
+        type: eventType,
+        data: eventData,
+        isBinary,
+        id: this.id++
+      })
+      return
+    }
+
+    const type = 'in'
+    let typedArray: Uint8Array | undefined
+    let rawData: string
+    let status: string
+    var checkData = ''
+    var returnmsg: string = '校验结论 : 数据接受正常.'
+
+    if (isBinary) {
+      this.ptimer(0) // clear the timer
+
+      typedArray = new Uint8Array(eventData)
+      let num: number
+      let strtypedArray: string = ' '
+      for(let i = 0; i < typedArray.length; i++) {
+        num = typedArray[i]
+        strtypedArray += PrefixInteger(num.toString(16), 2) + ' '
+      }
+
+      rawData = strtypedArray
+      status = 'in'
+
+      //new added to check accepted data
+      checkData = rawData
+
+
+/*    check.hasReturnDes = types.CheckKind.hasReturnDes
+      check.hasReturnRes = types.CheckKind.hasReturnRes
+      this.return_yes_desc = types.CheckKind.hasReturnDes
+      this.return_yes_res = types.CheckKind.hasReturnRes
+      this.return_no_desc = ''
+      this.return_no_res = ''*/
+    } else {
+      typedArray = undefined
+      rawData = eventData
+      console.log("-------rawData:", rawData)
+      if (rawData.includes('disconnected')) {
+        status = 'disconnect'
+      } else if (rawData.includes('connected')) {
+        status = 'connect'
+      } else {
+        status = 'other'
+      }
+    }
+    this.messages.unshift({
+      moment: getNow(),
+      type: status,
+      rawData,
+      visible: undefined,
+      visibilityButtonExtraBottom: 0,
+      isBinary,
+      id: this.id++
+    })
+
+    // check data
+    console.log("checkData:", checkData)
+    if (checkData != '') {
+      returnmsg = this.check_data(checkData)
+      alert(returnmsg)
+      console.log("check result:" + returnmsg)
+    }
+
+    if (this.protocol === 'WebSocket' && this.isSocketIOInternally) {
+      decoder.add(eventData)
+    } else if (!isBinary) {
+      try {
+        const protocol: types.Protocol = JSON.parse(eventData)
+        if (this.protocol !== 'WebSocket') {
+          console.log("protocol.kind:", protocol.kind)
+          if (protocol.kind === types.ProtocolKind.tcpConnected) {
+            this.tcpConnected = true
+          } else if (protocol.kind === types.ProtocolKind.tcpDisconnected) {
+            this.tcpConnected = false
+          } else if (protocol.kind === types.ProtocolKind.userinfoSaved) {
+            console.log("resprotocol", protocol) // userinfoSaved new added
+            //document.getElementById("addmodalclose").click()
+          } else if (protocol.kind === types.ProtocolKind.userresultSaved) {
+	    //$("#setModal").modal("hide");
+            //document.getElementById("setmodalclose").click()
+            console.log("resprotocol:", protocol)
+          } else if (protocol.kind === types.ProtocolKind.checkruleListed) {
+            console.log("resprotocol", protocol) 
+            console.log("$$$$$$$$$$$ check list:", protocol.data[0])
+
+            this.checkrules.length = 0
+            for(var i = 0; i< 1; i++) { 
+              console.log("+++++++checkrule list:", protocol.data[i])
+              this.checkrules[i] = protocol.data[i]
+              console.log("+++++++ucheckrules[0]:", this.checkrules[i])              
+            }
+         
+            this.return_yes_desc = (Object(this.checkrules[0])).return_yes_desc
+            this.return_yes_res= (Object(this.checkrules[0])).return_yes_res
+            this.return_no_desc = (Object(this.checkrules[0])).return_no_desc
+            this.return_no_res= (Object(this.checkrules[0])).return_no_res
+            this.frame_header_err_desc= (Object(this.checkrules[0])).frame_header_err_desc
+            this.frame_header_err_res= (Object(this.checkrules[0])).frame_header_err_res
+            this.frame_end_err_desc= (Object(this.checkrules[0])).frame_end_err_desc
+            this.frame_end_err_res= (Object(this.checkrules[0])).frame_end_err_res
+            this.check_code_err_desc= (Object(this.checkrules[0])).check_code_err_desc
+            this.check_code_err_res= (Object(this.checkrules[0])).check_code_err_res
+            this.total_bytes_err_desc= (Object(this.checkrules[0])).total_bytes_err_desc
+            this.total_bytes_err_res= (Object(this.checkrules[0])).total_bytes_err_res
+          } else if (protocol.kind === types.ProtocolKind.userinfoResearched) {
+            console.log("resprotocol:", protocol)
+            console.log(">>>>>>>userinfoResearched.data:", protocol.data[0])
+            console.log(">>>>>>>userinfoResearched.data:", protocol.data[1])
+          } else if (protocol.kind === types.ProtocolKind.userinfoUpdated) {
+            console.log("resprotocol:", protocol)
+          } else if (protocol.kind === types.ProtocolKind.userinfoDeleted) {
+            console.log("userinfoDeleted")
+          }  else if (protocol.kind === types.ProtocolKind.userinfoListed) {
+            console.log("resprotocol:", protocol)
+            console.log("+++++++userinfo list:", protocol.data[0])
+            console.log("+++++++userinfo list:", protocol.data[1])
+
+            this.userinfos.length = 0
+            for(var i = 0; i<protocol.data.length; i++) { 
+              console.log("+++++++userinfo list:", protocol.data[i])
+              this.userinfos[i] = protocol.data[i]
+              console.log("+++++++userinfos[0]:", this.userinfos[i])              
+            }
+         
+            console.log("+++++++userinfos[0]:", this.userinfos[0])
+            console.log("+++++++userinfos[0]:", this.userinfos[1])
+      
+            this.host = (Object(this.userinfos[0])).ip
+            this.port = (Object(this.userinfos[0])).port
+            this.message = (Object(this.userinfos[0])).sendmsg
+            this.frameheader_cur =(Object(this.userinfos[0])).frame_header
+            this.frameend_cur = (Object(this.userinfos[0])).frame_end
+            this.checkstart_cur = (Object(this.userinfos[0])).check_code_start
+            this.checkend_cur = (Object(this.userinfos[0])).check_code_end
+            this.checkcode_cur = (Object(this.userinfos[0])).check_code
+            this.totalbytes_cur = (Object(this.userinfos[0])).total_bytes
+
+            console.log("host_cur:", this.host_cur)
+
+          } else if (protocol.kind === types.ProtocolKind.noresponse) {            
+            console.log("noresponse")
+          }
+        }
+
+        if (this.tcpConnected) {
+          this.messages.unshift({
+            moment: getNow(),
+            type: 'connect',
+            formattedData: JSON.stringify(protocol, null, '    '),
+            isBinary,
+            visible: undefined,
+            visibilityButtonExtraBottom: 0,
+            id: this.id++
+          })
+        } else {
+          this.messages.unshift({
+            moment: getNow(),
+            type: 'disconnect',
+            formattedData: JSON.stringify(protocol, null, '    '),
+            isBinary,
+            visible: undefined,
+            visibilityButtonExtraBottom: 0,
+            id: this.id++
+          })
+        }
+      } catch (error) {
+        printInConsole(error)
+      }
+    } else {
+      try {
+        const formattedData = new TextDecoder('utf-8').decode(typedArray!)
+        this.messages.unshift({
+          moment: getNow(),
+          type: 'in',
+          formattedData,
+          isBinary,
+          visible: undefined,
+          visibilityButtonExtraBottom: 0,
+          id: this.id++
+        })
+      } catch (error) {
+        printInConsole(error)
+      }
+
+      if (this.protobufType) {
+        try {
+          const object = this.protobufType.toObject(this.protobufType.decode(typedArray!))
+          this.messages.unshift({
+            moment: getNow(),
+            type,
+            formattedData: JSON.stringify(object, null, '    '),
+            isBinary,
+            visible: undefined,
+            visibilityButtonExtraBottom: 0,
+            id: this.id++
+          })
+        } catch (error) {
+          printInConsole(error)
+        }
+      } else if (!this.dnsIsHidden && typedArray) {
+        try {
+          const object = DNSMessage.parse(typedArray.buffer as ArrayBuffer)
+          this.messages.unshift({
+            moment: getNow(),
+            type,
+            formattedData: JSON.stringify(object, null, '    '),
+            isBinary,
+            visible: undefined,
+            visibilityButtonExtraBottom: 0,
+            id: this.id++
+          })
+        } catch (error) {
+          printInConsole(error)
+        }
+      }
+    }
+  }
+  private onerror(e: Event) {
+    this.messages.unshift({
+      moment: getNow(),
+      type: e.type,
+      id: this.id++
+    })
+    this.websocket = null
+    clearInterval(pingId)
+  }
+  private showLocalDescription() {
+    this.messages.unshift({
+      moment: getNow(),
+      type: 'tips',
+      tips: JSON.stringify(this.peerConnection!.localDescription!.toJSON()),
+      id: this.id++
+    })
+  }
+}
+
+const app = new App({
+  el: '#body',
+})
+
+if (!WebSocket) {
+  app.messages.unshift({
+    moment: getNow(),
+    type: 'tips',
+    tips: "current browser doesn't support WebSocket",
+    id: app.id++
+  })
+}
+
+decoder.on('decoded', decodedPacket => {
+  app.messages.unshift({
+    moment: getNow(),
+    type: 'in',
+    formattedData: JSON.stringify(decodedPacket, null, '    '),
+    visible: undefined,
+    visibilityButtonExtraBottom: 0,
+    id: app.id++
+  })
+})
+
+previewDecoder.on('decoded', decodedPacket => {
+  app.previewResult = JSON.stringify(decodedPacket, null, '    ')
+})
+
+window.onscroll = () => {
+  console.log("window.onscroll")
+  const innerHeight = (window.innerHeight || document.documentElement.clientHeight)
+  for (let i = 0; i < app.messages.length; i++) {
+    const message = app.messages[i]
+    const element = document.getElementById(app.resultId(i))
+    if (element) {
+      const rect = element.getBoundingClientRect()
+      message.visibilityButtonExtraBottom = (rect.top < innerHeight - 40 && rect.top + rect.height > innerHeight)
+        ? (rect.top + rect.height - innerHeight) : 0
+    }
+  }
+}
+
+const wsProtocol = location.protocol === 'https:' ? 'wss:' : 'ws:'
+proxyWebSocket = new WebSocket(`${wsProtocol}//${location.host}`)
+
+// list user info when the homepage is loaded
+window.onload = () => {
+     var url = location.search; //获取url中"?"符后的字串
+     if (url.indexOf("?") != -1) {    //判断是否有参数
+        var str = url.substr(1); //从第一个字符开始 因为第0个是?号 获取所有除问号的所有符串
+        var strs = str.split("=");   //用等号进行分隔 （因为知道只有一个参数 所以直接用等号进分隔 如果有多个参数 要用&号分隔 再用等号进行分隔）
+        var onloadusername = strs[1];
+        console.log("get url parameters:", strs)
+        //alert(strs[1]);          //直接弹出第一个参数 （如果有多个参数 还要进行循环的）
+     }
+  
+  setTimeout( ()=>{
+    //回掉函数开始计时了
+    onuserinfoListed_test(onloadusername)  
+  },types.Timer.timerload) 
+}
+
+proxyWebSocket.binaryType = 'arraybuffer'
+proxyWebSocket.onmessage = event => {
+  app.onmessage(event)
+}
+proxyWebSocket.onerror = event => {
+  printInConsole(event)
+  app.useProxy = false
+}
+
+if (navigator.serviceWorker && !location.host.startsWith('localhost')) {
+  navigator.serviceWorker.register('service-worker.bundle.js').catch(error => {
+    printInConsole('registration failed with error: ' + error)
+  })
+}
+
+function printInConsole(message: any) {
+  console.log(message)
+}
+
+function onuserinfoListed_test(lusername: string) {
+        console.log('onuserinfoListed')
+        let formattedData: string | undefined
+
+        const protocol: types.Protocol = {
+          kind: types.ProtocolKind.userinfoList,
+          Id: 1,
+	  username: lusername
+        }
+        console.log('1003')
+        console.log(protocol)
+        formattedData = JSON.stringify(protocol, null, '  ')
+        proxyWebSocket.send(JSON.stringify(protocol))
+        console.log('proxyWebSocket', proxyWebSocket)
+        console.log('1007')
+        console.log(formattedData)
+  }

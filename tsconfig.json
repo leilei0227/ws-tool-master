@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "target": "es5",
+    "skipLibCheck": true
+  },
+  "noImplicitAny": false,
+  "files": [
+    "index.ts",
+    "variables.ts",
+    "types.ts",
+    "lib.d.ts"
+  ]
+}

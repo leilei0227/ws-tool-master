@@ -298,16 +298,16 @@
 	<div class="row receiveSection">
 		<h3 class="col-md-12">
 			链路状态：
-			<!-- 	// errorStatus = 200正常
+			<!-- 	// errorStatus = 200通讯正常
 			// errorStatus = 401主站通讯故障
-			// errorStatus = 402主站报文错误
-			// errorStatus = 403从站报文错误
+			// errorStatus = 402主站故障
+			// errorStatus = 403从站故障
 			// errorStatus = 501未连接
 			// errorStatus = 502已断开 -->
-			<span v-if="errorStatus===200" class="badge badge-success">正常</span>
+			<span v-if="errorStatus===200" class="badge badge-success">通讯正常</span>
 			<span v-else-if="errorStatus===401" class="badge badge-danger">主站通讯故障</span>
-			<span v-else-if="errorStatus===402" class="badge badge-danger">主站报文错误</span>
-			<span v-else-if="errorStatus===403" class="badge badge-danger">从站报文错误</span>
+			<span v-else-if="errorStatus===402" class="badge badge-danger">主站故障</span>
+			<span v-else-if="errorStatus===403" class="badge badge-danger">从站故障</span>
 			<span v-else-if="errorStatus===501" class="badge badge-info">未连接</span>
 			<span v-else-if="errorStatus===502" class="badge badge-info">已连接</span>
 			<span v-else-if="errorStatus===503" class="badge badge-info">已断开</span>

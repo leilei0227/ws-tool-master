@@ -221,10 +221,10 @@ export class App extends Vue {
   private errorStatus: number = 501//zll
   private isClosed: boolean = true//zll
   private errorObj: any = {
-	  "200": "正常",
+	  "200": "通讯正常",
 	  "401": "主站通讯故障",
-	  "402": "主站报文错误",
-	  "403": "从站报文错误",
+	  "402": "主站故障",
+	  "403": "从站故障",
 	  "501": "未连接",
 	  "502": "已连接",
 	  "503": "已断开"
@@ -446,7 +446,7 @@ export class App extends Vue {
 		   if(this.isClosed) {
 			   return
 		   }
-		   this.errorStatus = 200 //默认正常
+		   this.errorStatus = 200 //通讯正常
 		   var msgstr:string = ''
 		    for(var i:number=0, len:number=this.messages.length; i<len; i++) {
 				 var m:Message = this.messages[i]
@@ -461,9 +461,9 @@ export class App extends Vue {
 		   	  return
 		     }
 		     
-		   if(!msgstr.match(this.mainPackInternally)) this.errorStatus = 402 //主站报文错误
+		   if(!msgstr.match(this.mainPackInternally)) this.errorStatus = 402 //主站故障
 		   var wholePack:string = this.mainPackInternally + " " + this.subPackInternally
-		   if(msgstr.match(this.mainPackInternally) && !msgstr.match(wholePack)) this.errorStatus = 403 //从站报文错误
+		   if(msgstr.match(this.mainPackInternally) && !msgstr.match(wholePack)) this.errorStatus = 403 //从站故障
 		   
 		   
 		   if(this.errorStatus===401 || this.errorStatus===402||this.errorStatus===403) {

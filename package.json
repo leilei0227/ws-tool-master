@@ -59,7 +59,7 @@
     "markdownlint-cli": "0.11.0",
     "no-unused-export": "1.5.1",
     "postcss-cli": "6.0.0",
-    "protobufjs": "6.8.8",
+    "protobufjs": "6.11.3",
     "puppeteer": "1.6.0",
     "rev-static": "3.4.2",
     "rimraf": "2.6.2",
